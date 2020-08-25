@@ -50,12 +50,13 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
+import android.database.ContentObserver;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.Region;
-import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
 import android.media.AudioManager;
 import android.media.AudioSystem;
 import android.os.Debug;
@@ -63,6 +64,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
+import android.os.UserHandle;
 import android.os.VibrationEffect;
 import android.provider.Settings;
 import android.provider.Settings.Global;
@@ -70,6 +72,10 @@ import android.text.InputFilter;
 import android.util.Log;
 import android.util.Slog;
 import android.util.SparseBooleanArray;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.animation.DecelerateInterpolator;
 import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -84,10 +90,6 @@ import android.view.ViewTreeObserver.InternalInsetsInfo;
 import android.view.ViewTreeObserver.OnComputeInternalInsetsListener;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityManager;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -96,17 +98,18 @@ import android.widget.SeekBar.OnSeekBarChangeListener;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import co.potatoproject.plugin.volume.common.*;
+import lineageos.providers.LineageSettings;
 
 import co.potatoproject.plugin.volume.aosp.R;
+import co.potatoproject.plugin.volume.common.*;
 
 import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.annotations.Requires;
 import com.android.systemui.plugins.PluginDependency;
 import com.android.systemui.plugins.VolumeDialog;
+import com.android.systemui.plugins.VolumeDialogController;
 import com.android.systemui.plugins.VolumeDialogController.State;
 import com.android.systemui.plugins.VolumeDialogController.StreamState;
-import com.android.systemui.plugins.VolumeDialogController;
-import com.android.systemui.plugins.annotations.Requires;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -187,13 +190,15 @@ public class VolumeDialogImpl implements VolumeDialog {
 
     private boolean mLeftVolumeRocker;
 
+    private SettingsObserver settingsObserver;
+
     public VolumeDialogImpl() {}
 
     @Override
     public void onCreate(Context sysuiContext, Context pluginContext) {
         mSysUIR = new SysUIR(pluginContext);
         mContext = pluginContext;
-        mSysUIContext = 
+        mSysUIContext =
                 new ContextThemeWrapper(sysuiContext, mSysUIR.style("qs_theme", sysuiContext));
         mController = PluginDependency.get(this, VolumeDialogController.class);
         mKeyguard = (KeyguardManager) mContext.getSystemService(Context.KEYGUARD_SERVICE);
@@ -202,7 +207,8 @@ public class VolumeDialogImpl implements VolumeDialog {
         mShowActiveStreamOnly = showActiveStreamOnly();
         mHasSeenODICaptionsTooltip =
                 Prefs.getBoolean(sysuiContext, Prefs.Key.HAS_SEEN_ODI_CAPTIONS_TOOLTIP, false);
-        mLeftVolumeRocker = mSysUIContext.getResources().getBoolean(mSysUIR.bool("config_audioPanelOnLeftSide"));
+        settingsObserver = new SettingsObserver(mHandler);
+        settingsObserver.observe();
     }
 
     public void init(int windowType, Callback callback) {
@@ -218,6 +224,7 @@ public class VolumeDialogImpl implements VolumeDialog {
     public void destroy() {
         mController.removeCallback(mControllerCallbackH);
         mHandler.removeCallbacksAndMessages(null);
+        settingsObserver.unobserve();
     }
 
     private void initDialog() {
@@ -362,6 +369,31 @@ public class VolumeDialogImpl implements VolumeDialog {
         initRingerH();
         initSettingsH();
         initODICaptionsH();
+    }
+
+    private class SettingsObserver extends ContentObserver {
+        SettingsObserver(Handler handler) {
+            super(handler);
+        }
+
+        void unobserve() {
+            mContext.getContentResolver().unregisterContentObserver(this);
+        }
+
+        void observe() {
+            mContext.getContentResolver().registerContentObserver(LineageSettings.Secure.getUriFor(LineageSettings.Secure.VOLUME_PANEL_ON_LEFT), false, this, UserHandle.USER_ALL);
+            update();
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            update();
+            initDialog();
+        }
+
+        public void update() {
+            mLeftVolumeRocker = LineageSettings.Secure.getIntForUser(mContext.getContentResolver(), LineageSettings.Secure.VOLUME_PANEL_ON_LEFT, 0, UserHandle.USER_CURRENT) != 0;
+        }
     }
 
     private final OnComputeInternalInsetsListener mInsetsListener = internalInsetsInfo -> {
@@ -1447,7 +1479,7 @@ public class VolumeDialogImpl implements VolumeDialog {
         @Override
         public void onConfigurationChanged() {
             if(mDialog.isShown()) {
-                mWindowManager.removeViewImmediate(mDialog);    
+                mWindowManager.removeViewImmediate(mDialog);
             }
             mConfigChanged = true;
         }

@@ -50,15 +50,16 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.content.res.TypedArray;
+import android.database.ContentObserver;
 import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.InsetDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
 import android.graphics.Region;
-import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
-import android.graphics.drawable.InsetDrawable;
-import android.graphics.drawable.GradientDrawable;
-import android.graphics.drawable.RippleDrawable;
 import android.media.AudioManager;
 import android.media.AudioSystem;
 import android.os.Debug;
@@ -66,6 +67,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
+import android.os.UserHandle;
 import android.os.VibrationEffect;
 import android.provider.Settings;
 import android.provider.Settings.Global;
@@ -74,6 +76,10 @@ import android.util.Log;
 import android.util.Slog;
 import android.util.SparseBooleanArray;
 import android.util.TypedValue;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.animation.DecelerateInterpolator;
 import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -88,10 +94,6 @@ import android.view.ViewTreeObserver.InternalInsetsInfo;
 import android.view.ViewTreeObserver.OnComputeInternalInsetsListener;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityManager;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -100,17 +102,18 @@ import android.widget.SeekBar.OnSeekBarChangeListener;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import co.potatoproject.plugin.volume.common.*;
+import lineageos.providers.LineageSettings;
 
+import co.potatoproject.plugin.volume.common.*;
 import co.potatoproject.plugin.volume.tiled.R;
 
 import com.android.systemui.plugins.ActivityStarter;
+import com.android.systemui.plugins.annotations.Requires;
 import com.android.systemui.plugins.PluginDependency;
 import com.android.systemui.plugins.VolumeDialog;
 import com.android.systemui.plugins.VolumeDialogController;
 import com.android.systemui.plugins.VolumeDialogController.State;
 import com.android.systemui.plugins.VolumeDialogController.StreamState;
-import com.android.systemui.plugins.annotations.Requires;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -193,13 +196,15 @@ public class VolumeDialogImpl implements VolumeDialog {
     private Drawable mSwitchStreamSelectedDrawable;
     private boolean mActiveStreamManuallyModified = false;
 
+    private SettingsObserver settingsObserver;
+
     public VolumeDialogImpl() {}
 
     @Override
     public void onCreate(Context sysuiContext, Context pluginContext) {
         mSysUIR = new SysUIR(pluginContext);
         mContext = pluginContext;
-        mSysUIContext = 
+        mSysUIContext =
                 new ContextThemeWrapper(sysuiContext, mSysUIR.style("qs_theme", sysuiContext));
         mController = PluginDependency.get(this, VolumeDialogController.class);
         mKeyguard = (KeyguardManager) mContext.getSystemService(Context.KEYGUARD_SERVICE);
@@ -208,7 +213,8 @@ public class VolumeDialogImpl implements VolumeDialog {
         mShowActiveStreamOnly = showActiveStreamOnly();
         mHasSeenODICaptionsTooltip =
                 Prefs.getBoolean(sysuiContext, Prefs.Key.HAS_SEEN_ODI_CAPTIONS_TOOLTIP, false);
-        mLeftVolumeRocker = mSysUIContext.getResources().getBoolean(mSysUIR.bool("config_audioPanelOnLeftSide"));
+        settingsObserver = new SettingsObserver(mHandler);
+        settingsObserver.observe();
     }
 
     public void init(int windowType, Callback callback) {
@@ -224,6 +230,7 @@ public class VolumeDialogImpl implements VolumeDialog {
     public void destroy() {
         mController.removeCallback(mControllerCallbackH);
         mHandler.removeCallbacksAndMessages(null);
+        settingsObserver.unobserve();
     }
 
     private void initDialog() {
@@ -359,7 +366,32 @@ public class VolumeDialogImpl implements VolumeDialog {
         initRingerH();
         initODICaptionsH();
     }
-    
+
+    private class SettingsObserver extends ContentObserver {
+        SettingsObserver(Handler handler) {
+            super(handler);
+        }
+
+        void unobserve() {
+            mContext.getContentResolver().unregisterContentObserver(this);
+        }
+
+        void observe() {
+            mContext.getContentResolver().registerContentObserver(LineageSettings.Secure.getUriFor(LineageSettings.Secure.VOLUME_PANEL_ON_LEFT), false, this, UserHandle.USER_ALL);
+            update();
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            update();
+            initDialog();
+        }
+
+        public void update() {
+            mLeftVolumeRocker = LineageSettings.Secure.getIntForUser(mContext.getContentResolver(), LineageSettings.Secure.VOLUME_PANEL_ON_LEFT, 0, UserHandle.USER_CURRENT) != 0;
+        }
+    }
+
     private final OnComputeInternalInsetsListener mInsetsListener = internalInsetsInfo -> {
         internalInsetsInfo.touchableRegion.setEmpty();
         internalInsetsInfo.setTouchableInsets(InternalInsetsInfo.TOUCHABLE_INSETS_REGION);
@@ -435,7 +467,7 @@ public class VolumeDialogImpl implements VolumeDialog {
             stream == AudioManager.STREAM_ALARM) {
             Utils.setVisOrGone(button.view, true);
         } else Utils.setVisOrGone(button.view, false);
-            
+
         mSwitchButtons.add(button);
     }
 
@@ -444,7 +476,7 @@ public class VolumeDialogImpl implements VolumeDialog {
         for (int i = 0; i < N; i++) {
             final VolumeRow row = mRows.get(i);
             final StreamSwitchButton button = mSwitchButtons.get(i);
-        
+
             initRow(row, row.stream, row.iconRes, row.iconMuteRes, row.important,
                     row.defaultStream);
             initStreamButton(button, row, button.stream, button.iconRes, button.iconMuteRes);
@@ -578,7 +610,7 @@ public class VolumeDialogImpl implements VolumeDialog {
             mContext.getDrawable(R.drawable.rounded_ripple_selected);
 
         GradientDrawable bgDrawable = new GradientDrawable();
-            
+
         TypedArray ta = mContext.obtainStyledAttributes(new int[]{android.R.attr.dialogCornerRadius});
         float cornerRadiusDPI = ta.getDimension(0, 4f);
         int alpha = getAlphaAttr(android.R.attr.secondaryContentAlpha);
@@ -602,9 +634,9 @@ public class VolumeDialogImpl implements VolumeDialog {
         bgDrawable.setAlpha(60);
         bgDrawable.setCornerRadius((cornerRadius / 2) - cornerDifference);
         bgDrawable.setColor(Utils.getColorAccent(mContext));
-            
+
         rippleDrawable.setDrawableByLayerId(R.id.background, bgDrawable);
-            
+
         return new InsetDrawable(rippleDrawable, padding, padding, padding, padding);
     }
 
@@ -667,7 +699,7 @@ public class VolumeDialogImpl implements VolumeDialog {
                 Utils.setVisOrGone(currentButton.row.view, false);
                 int color = Utils.getColorAttr(mSysUIContext, android.R.attr.colorForeground).getDefaultColor();
                 int alpha = getAlphaAttr(android.R.attr.secondaryContentAlpha);
-    
+
                 currentButton.icon.setBackgroundResource(R.drawable.rounded_ripple);
                 currentButton.icon.setColorFilter(
                     color,
@@ -1553,7 +1585,7 @@ public class VolumeDialogImpl implements VolumeDialog {
         @Override
         public void onConfigurationChanged() {
             if(mDialog.isShown()) {
-                mWindowManager.removeViewImmediate(mDialog);    
+                mWindowManager.removeViewImmediate(mDialog);
             }
             mConfigChanged = true;
         }

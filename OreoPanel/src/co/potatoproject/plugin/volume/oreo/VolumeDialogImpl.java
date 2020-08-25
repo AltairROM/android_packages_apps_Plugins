@@ -36,13 +36,14 @@ import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.content.res.Resources;
+import android.database.ContentObserver;
 import android.graphics.Color;
-import android.graphics.PixelFormat;
-import android.graphics.Rect;
-import android.graphics.Region;
 import android.graphics.drawable.AnimatedVectorDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
+import android.graphics.PixelFormat;
+import android.graphics.Rect;
+import android.graphics.Region;
 import android.media.AudioManager;
 import android.media.AudioSystem;
 import android.os.Debug;
@@ -50,6 +51,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
+import android.os.UserHandle;
 import android.os.VibrationEffect;
 import android.provider.Settings;
 import android.provider.Settings.Global;
@@ -60,27 +62,27 @@ import android.util.DisplayMetrics;
 import android.util.Log;
 import android.util.Slog;
 import android.util.SparseBooleanArray;
+import android.view.accessibility.AccessibilityEvent;
+import android.view.accessibility.AccessibilityManager;
+import android.view.accessibility.AccessibilityManager.AccessibilityStateChangeListener;
+import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.animation.DecelerateInterpolator;
 import android.view.ContextThemeWrapper;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.View.AccessibilityDelegate;
+import android.view.ViewGroup;
+import android.view.ViewGroup.MarginLayoutParams;
 import android.view.View.OnAttachStateChangeListener;
 import android.view.View.OnClickListener;
 import android.view.View.OnTouchListener;
-import android.view.ViewGroup;
-import android.view.ViewGroup.MarginLayoutParams;
 import android.view.ViewTreeObserver;
 import android.view.ViewTreeObserver.InternalInsetsInfo;
 import android.view.ViewTreeObserver.OnComputeInternalInsetsListener;
 import android.view.Window;
 import android.view.WindowManager;
-import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityManager;
-import android.view.accessibility.AccessibilityManager.AccessibilityStateChangeListener;
-import android.view.accessibility.AccessibilityNodeInfo;
-import android.view.animation.DecelerateInterpolator;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.SeekBar;
@@ -89,15 +91,14 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import co.potatoproject.plugin.volume.common.*;
-
 import co.potatoproject.plugin.volume.oreo.R;
 
+import com.android.systemui.plugins.annotations.Requires;
 import com.android.systemui.plugins.PluginDependency;
 import com.android.systemui.plugins.VolumeDialog;
 import com.android.systemui.plugins.VolumeDialogController;
 import com.android.systemui.plugins.VolumeDialogController.State;
 import com.android.systemui.plugins.VolumeDialogController.StreamState;
-import com.android.systemui.plugins.annotations.Requires;
 
 import java.io.PrintWriter;
 import java.util.ArrayList;
@@ -169,19 +170,23 @@ public class VolumeDialogImpl implements VolumeDialog {
     private boolean mHovering = false;
     private int mDensity;
 
+    private SettingsObserver settingsObserver;
+
     public VolumeDialogImpl() {}
 
     @Override
     public void onCreate(Context sysuiContext, Context pluginContext) {
         mSysUIR = new SysUIR(pluginContext);
         mContext = pluginContext;
-        mSysUIContext = 
+        mSysUIContext =
                 new ContextThemeWrapper(sysuiContext, mSysUIR.style("qs_theme", sysuiContext));
         mController = PluginDependency.get(this, VolumeDialogController.class);
         mKeyguard = (KeyguardManager) mContext.getSystemService(Context.KEYGUARD_SERVICE);
         mAudioManager = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
         mAccessibilityMgr =
                 (AccessibilityManager) mContext.getSystemService(Context.ACCESSIBILITY_SERVICE);
+        settingsObserver = new SettingsObserver(mHandler);
+        settingsObserver.observe();
     }
 
     public void init(int windowType, Callback callback) {
@@ -204,11 +209,12 @@ public class VolumeDialogImpl implements VolumeDialog {
         mAccessibility.destroy();
         mController.removeCallback(mControllerCallbackH);
         mHandler.removeCallbacksAndMessages(null);
+        settingsObserver.unobserve();
     }
 
     private void initDialog() {
         mWindowManager = (WindowManager) mContext.getSystemService(Context.WINDOW_SERVICE);
-        
+
         mSysUIContext.getTheme().applyStyle(mSysUIContext.getThemeResId(), true);
         mSysUIContext.getTheme().rebase();
         mContext.getTheme().setTo(mSysUIContext.getTheme());
@@ -310,7 +316,31 @@ public class VolumeDialogImpl implements VolumeDialog {
         mExpandButtonAnimationDuration = 300;
         initRingerH();
     }
-    
+
+    private class SettingsObserver extends ContentObserver {
+        SettingsObserver(Handler handler) {
+            super(handler);
+        }
+
+        void unobserve() {
+            mContext.getContentResolver().unregisterContentObserver(this);
+        }
+
+        void observe() {
+            update();
+        }
+
+        @Override
+        public void onChange(boolean selfChange) {
+            update();
+            initDialog();
+        }
+
+        public void update() {
+            // updateRowsH(getActiveRow());
+        }
+    }
+
     private final OnComputeInternalInsetsListener mInsetsListener = internalInsetsInfo -> {
         internalInsetsInfo.touchableRegion.setEmpty();
         internalInsetsInfo.setTouchableInsets(InternalInsetsInfo.TOUCHABLE_INSETS_REGION);
